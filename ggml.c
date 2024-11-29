@@ -23,10 +23,28 @@
 #include <limits.h>
 #include <stdarg.h>
 #include <signal.h>
+#include <stdio.h>
+int64_t get_time_us() {
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts); // 使用单调时钟，避免因系统时间调整导致问题
+    return (int64_t)ts.tv_sec * 1000000 + ts.tv_nsec / 1000;
+}
 
 // #define _GNU_SOURCE
 // #include <sched.h>
 
+int weight[11008];
+typedef struct {
+    int index;
+    int value;
+} WeightEntry;
+
+// 比较函数，用于排序（从大到小）
+int compare(const void *a, const void *b) {
+    WeightEntry *entryA = (WeightEntry *)a;
+    WeightEntry *entryB = (WeightEntry *)b;
+    return entryB->value - entryA->value; // 按值降序排序
+}
 #ifdef GGML_USE_METAL
 #include <unistd.h>
 #endif
@@ -3088,7 +3106,7 @@ struct ggml_tensor * ggml_get_next_tensor(struct ggml_context * ctx, struct ggml
 
     return NULL;
 }
-
+//查找特定tensor
 struct ggml_tensor * ggml_get_tensor(struct ggml_context * ctx, const char * name) {
     struct ggml_object * obj = ctx->objects_begin;
 
@@ -8155,6 +8173,7 @@ static void ggml_compute_forward_sum_i32(
             }
         }
     }
+    printf("%d\n",sum);
     ((int32_t *) dst->data)[0] = sum;
 }
 
@@ -14033,8 +14052,8 @@ static void ggml_compute_forward_mul_mat_sparse(
         const struct ggml_tensor * src1,
               struct ggml_tensor * dst) {
     int64_t t0 = ggml_perf_time_us();
-    UNUSED(t0);
-
+    // UNUSED(t0);
+    int64_t start_time = get_time_us();
     GGML_TENSOR_BINARY_OP_LOCALS;
 
     const int ith = params->ith;
@@ -14133,7 +14152,7 @@ static void ggml_compute_forward_mul_mat_sparse(
             }
         }
 
-        //printf("CBLAS = %f ms, %d x %d x %d x %d\n", (ggml_perf_time_us() - t0)/1000.0, ne0, ne1, ne2, ne3);
+        printf("CBLAS = %f ms, %d x %d x %d x %d\n", (ggml_perf_time_us() - t0)/1000.0, ne0, ne1, ne2, ne3);
 
         return;
     }
@@ -14165,9 +14184,15 @@ static void ggml_compute_forward_mul_mat_sparse(
     const void * wdata    = (src1->type == vec_dot_type) ? src1->data : params->wdata;
     const size_t row_size = ne10*ggml_type_size(vec_dot_type)/ggml_blck_size(vec_dot_type);
 
-    const int64_t nr0 = ne01;           // src0 rows
-    const int64_t nr1 = ne11*ne12*ne13; // src1 rows
-
+    const int64_t nr0 = ne01;           // src0 rows     11008
+    const int64_t nr1 = ne11*ne12*ne13; // src1 rows      1
+    
+    // if(ith==0)
+    // {
+    //     printf("ne00:%d,ne01:%d,ne02:%d,ne03:%d  ",ne00,ne01,ne02,ne03);
+    //     printf("ne10:%d,ne11:%d,ne12:%d,ne13:%d\n",ne10,ne11,ne12,ne13);
+    // }
+    //ne00:4096,ne01:11008,ne02:1,ne03:1  ne10:4096,ne11:1,ne12:1,ne13:1
 
     // distribute the thread work across the inner or outer loop based on which one is larger
 
@@ -14207,12 +14232,22 @@ static void ggml_compute_forward_mul_mat_sparse(
 
     // attempt to reduce false-sharing (does not seem to make a difference)
     // float tmp[16];
-    float *ffdata = (float *)dst->src[2]->data;
-    int *gid = (int *)dst->src[3]->data;
+
+    float *ffdata = (float *)dst->src[2]->data;   //sparse_idx
+    int *gid = (int *)dst->src[3]->data;          //gpu_idx或者bucket
+
     float *predictor_data = (float *)dst->src[2]->data;
+    // if(ith==0)
+    // {
+    // printf("sparse_idx的维度:%ld,%ld,%ld ",dst->src[2]->ne[0],dst->src[2]->ne[1],dst->src[2]->ne[2]);
+    // printf("sparse_idx的跨度:%ld,%ld,%ld\n ",dst->src[2]->nb[0],dst->src[2]->nb[1],dst->src[2]->nb[2]);
+    // }
     const size_t predictor_row_size = dst->src[2]->ne[0]*ggml_type_size(GGML_TYPE_F32)/ggml_blck_size(GGML_TYPE_F32);
 
+    int64_t t1 = ggml_perf_time_us();
+    // int cnt =0;
     while(true) {
+        // cnt ++;
         ir010 = atomic_fetch_add(params->aic, dr0);
         ir011 = MIN(ir010 + dr0, nr0);
         for (int64_t ir0 = ir010; ir0 < ir011; ++ir0)
@@ -14236,6 +14271,11 @@ static void ggml_compute_forward_mul_mat_sparse(
                     const int64_t i1 = i11;
                     const int64_t i2 = i12;
                     const int64_t i3 = i13;
+                    
+                    // if(ith==0)
+                    // {
+                    //     printf("i1:%ld,i2:%ld,i3:%ld\n",i1,i2,i3);
+                    // }
 
                     const char *src0_row = (const char *)src0->data + (0 + i02 * nb02 + i03 * nb03);
 
@@ -14249,7 +14289,7 @@ static void ggml_compute_forward_mul_mat_sparse(
                                                 : (i11 * nb11 + i12 * nb12 + i13 * nb13));
                     ffdata = (float *)((char *)predictor_data + (i11      + i12*ne11 + i13*ne12*ne11)*predictor_row_size);
                     // printf("ith %d row %d ir1 %d %d %d %d %d\n", ith, ir0, ir1, src1_col-(char *)wdata, ffdata-predictor_data, predictor_row_size, dst->src[2]->ne[1]);
-
+                        
                     float *dst_col = (float *)((char *)dst->data + (i1 * nb1 + i2 * nb2 + i3 * nb3));
 
                     // if (ffdata[ir0] <= 0.0f) {
@@ -14269,16 +14309,118 @@ static void ggml_compute_forward_mul_mat_sparse(
     }
     // printf("total %d\n", total);
 
+    // printf("%d ",cnt);
+    // sleep(1);
+    // int64_t t2 = ggml_perf_time_us();
+
+    // printf("CPU:%f  ",t2-t1);
+
+    int64_t end_time = get_time_us();
+
+    // 计算并打印执行时间
+    // if(ith ==0 )
+    // printf("CPU: %lld us  ", end_time - start_time);
+
+
+    // int predictor_cpu=0;    //结果保存在output.txt中
+    // int predictor = 0;
+    // int flag=0;
+    // for(int i=0;i<11008;i++)
+    // {
+    //     flag=0;
+    //     for(int j=0;j<dst->src[2]->ne[1];j++)
+    //     {
+    //         if(ffdata[i+11008*j]>threshold) flag=1;
+    //     }
+    //     if(flag) predictor++;
+    //     if(flag&&gid[i]==0) predictor_cpu++;
+    // }
+
+    // if (ith == 0)
+    // {
+    //     FILE *file = fopen("Relullama13b_singlerequests_acitivation_vrambudget1G.txt","a");
+
+    //     fprintf(file,"此时同时处理的token数目为:%d predictor %d predictor_cpu %d\n",dst->src[2]->ne[1],predictor, predictor_cpu);
+
+    //     fclose(file);
+    // }
+
+    
+    //这次我们换一下，看激活的总数  保存在output2.txt中
+    // int predictor_cpu=0;
+    // int predictor = 0;
+    // for(int i=0;i<11008;i++)
+    // {
+    //     for(int j=0;j<dst->src[2]->ne[1];j++)
+    //     {
+    //         if(ffdata[i+11008*j]>threshold)  predictor++;
+    //         if(ffdata[i+11008*j]>threshold&&gid[i]==0) predictor_cpu++;
+    //     }
+    // }
+
+    // if (ith == 0)
+    // {
+    //     FILE *file = fopen("output2.txt","a");
+
+    //     fprintf(file,"此时同时处理的token数目为:%d predictor总计算次数: %d predictor_cpu总计算次数: %d\n",dst->src[2]->ne[1],predictor, predictor_cpu);
+
+    //     fclose(file);
+    // }
+
+
+    //统计一下激活最多的一些weight
+    // if(dst->src[2]->ne[1]==1)
+    // {
+    // for(int i=0;i<11008;i++)
+    // {
+    //     for(int j=0;j<dst->src[2]->ne[1];j++)
+    //     {
+    //         if(ffdata[i+11008*j]>threshold)  weight[i]++;
+    //     }
+    // }
+    // if (ith == 0) {
+    //     // 创建存储索引和值的数组
+    //     WeightEntry entries[11008];
+    //     for (int i = 0; i < 11008; i++) {
+    //         entries[i].index = i;
+    //         entries[i].value = weight[i];
+    //     }
+
+    //     // 对数组按值排序
+    //     qsort(entries, 11008, sizeof(WeightEntry), compare);
+
+    //     // 打开文件
+    //     FILE *file = fopen("output3.txt", "w");
+    //     if (file == NULL) {
+    //         printf("无法打开文件！\n");
+    //         return 1;
+    //     }
+
+    //     // 写入前 100 个最大值及索引
+    //     fprintf(file, "Top %d weights (index, value):\n", 1000);
+    //     for (int i = 0; i < 1000 && i < 11008; i++) {
+    //         fprintf(file, "%d: %d\n", entries[i].index, entries[i].value);
+    //     }
+
+    //     // 关闭文件
+    //     fclose(file);
+    // }
+    // }
+
+    //查
+    // printf("0");
     // int predictor_cpu = 0;
     // int predictor = 0;
-    // for (int i = 0; i < 9216 *4 ; i++) {
-    //     if (ffdata[i] > 0.5f && gid[i] == 0)
+    // for (int i = 0; i < 11008*dst->src[3]->ne[1] ; i++) {
+    //     if (ffdata[i] > threshold && gid[i] == 0)
     //         predictor_cpu += 1;
-    //     if (ffdata[i] > 0.5f)
+    //     if (ffdata[i] > threshold)
     //         predictor += 1;
     // }
-    // if (ith == 0)
-    //     printf("predictor %d predictor_cpu %d\n", predictor, predictor_cpu);
+    // // if (ith == 0)
+    // printf("线程号:%d,predictor %d predictor_cpu %d  ",ith,predictor, predictor_cpu);
+
+
 }
 
 // vz = alpha * vx + vy  
@@ -14291,6 +14433,7 @@ static void ggml_axpy_normal_f16(const int n, const ggml_fp16_t * vx, const ggml
 }
 static void ggml_axpy_avx_f16(const int n, const ggml_fp16_t * restrict vx, const ggml_fp16_t * vy, void* vz, ggml_fp16_t alpha) {
 #if defined(__AVX2__) 
+    // printf("1");
     float *result = (float *)vz;
     float alpha_f32 = GGML_FP16_TO_FP32(alpha);  
     __m256 scale = _mm256_set1_ps(alpha_f32);  // 创建scale向量
@@ -14316,8 +14459,10 @@ static void ggml_compute_forward_mul_mat_axpy(
         const struct ggml_tensor * src0,
         const struct ggml_tensor * src1,
               struct ggml_tensor * dst) {
-    int64_t t0 = ggml_perf_time_us();
-    UNUSED(t0);
+    // int64_t t0 = ggml_perf_time_us();
+    // UNUSED(t0);
+
+    int64_t t0 = get_time_us();
 
     GGML_TENSOR_BINARY_OP_LOCALS;
 
@@ -14439,6 +14584,7 @@ static void ggml_compute_forward_mul_mat_axpy(
         int remainder = ne00 % 8;
 
 #if defined(__AVX2__)
+        // printf("2");
         // 使用AVX指令进行向量化计算
         for (i = 0; i < ne00 - remainder; i += 8) {
             __m256 res_vec = _mm256_loadu_ps(res + i);  // 加载res中的8个浮点数
@@ -14460,6 +14606,9 @@ static void ggml_compute_forward_mul_mat_axpy(
 #if defined(_MSC_VER)
     _freea(vec);
 #endif
+
+    int64_t t1 = get_time_us();
+    // if(ith==0)  printf("AXPY CPU:%lld us   ", t1-t0);
 }
 
 static void ggml_compute_forward_mul_mat_axpy_q4_0(
@@ -14738,6 +14887,7 @@ static void ggml_compute_forward_mul_mat_axpy_head(
     int remainder = ne00 % 8;
 
 #if defined(__AVX2__)
+    // printf("3");
     // 使用AVX指令进行向量化计算
     for (i = 0; i < ne00 - remainder; i += 8) {
         __m256 res_vec = _mm256_loadu_ps(res + i);  // 加载res中的8个浮点数
@@ -14791,6 +14941,7 @@ static void ggml_compute_forward(struct ggml_compute_params * params, struct ggm
 #ifdef GGML_USE_CUBLAS
     bool skip_cpu = ggml_cuda_compute_forward(params, tensor);
     if (skip_cpu) {
+        // printf("1");
         return;
     }
     // Make sure src[0] (weight for binary ops) is on CPU to avoid any weight transfer
@@ -16958,6 +17109,7 @@ static thread_ret_t ggml_graph_compute_thread(void * data) {
         struct ggml_tensor * node = cgraph->nodes[node_n];
         const int n_tasks = ggml_get_n_tasks(node, n_threads);
 
+        //在这里定义的params
         struct ggml_compute_params params = {
             /*.type  =*/ GGML_TASK_COMPUTE,
             /*.ith   =*/ state->ith,
@@ -17182,6 +17334,7 @@ static thread_ret_t ggml_graph_compute_thread_hybrid(void * data) {
     return GGML_EXIT_SUCCESS;
 }
 
+//根据computing graph构造computing plan cplan
 struct ggml_cplan ggml_graph_plan(struct ggml_cgraph * cgraph, int n_threads) {
     if (n_threads <= 0) {
         n_threads = GGML_DEFAULT_N_THREADS;
@@ -17428,6 +17581,7 @@ int ggml_graph_compute(struct ggml_cgraph * cgraph, struct ggml_cplan * cplan) {
 #ifdef GGML_USE_HYBRID_THREADING
             const int rc = ggml_thread_create(&workers[j].thrd, NULL, ggml_graph_compute_thread_hybrid, &workers[j]);
 #else
+            //使用的这个函数
             const int rc = ggml_thread_create(&workers[j].thrd, NULL, ggml_graph_compute_thread, &workers[j]);
 #endif
             GGML_ASSERT(rc == 0);
@@ -17446,6 +17600,7 @@ int ggml_graph_compute(struct ggml_cgraph * cgraph, struct ggml_cplan * cplan) {
 #ifdef GGML_USE_HYBRID_THREADING
     int compute_status = (size_t) ggml_graph_compute_thread_hybrid(&workers[0]);
 #else
+    //这里
     int compute_status = (size_t) ggml_graph_compute_thread(&workers[0]);
 #endif
 

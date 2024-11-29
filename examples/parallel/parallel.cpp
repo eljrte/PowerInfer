@@ -26,15 +26,22 @@ static std::string trim(const std::string & str) {
     return str.substr(start, end - start);
 }
 
-static std::string k_system =
-R"(Transcript of a never ending dialog, where the User interacts with an Assistant.
-The Assistant is helpful, kind, honest, good at writing, and never fails to answer the User's requests immediately and with precision.
+// static std::string k_system =
+// R"(Transcript of a never ending dialog, where the User interacts with an Assistant.
+// The Assistant is helpful, kind, honest, good at writing, and never fails to answer the User's requests immediately and with precision.
 
-User: Recommend a nice restaurant in the area.
-Assistant: I recommend the restaurant "The Golden Duck". It is a 5 star restaurant with a great view of the city. The food is delicious and the service is excellent. The prices are reasonable and the portions are generous. The restaurant is located at 123 Main Street, New York, NY 10001. The phone number is (212) 555-1234. The hours are Monday through Friday from 11:00 am to 10:00 pm. The restaurant is closed on Saturdays and Sundays.
-User: Who is Richard Feynman?
-Assistant: Richard Feynman was an American physicist who is best known for his work in quantum mechanics and particle physics. He was awarded the Nobel Prize in Physics in 1965 for his contributions to the development of quantum electrodynamics. He was a popular lecturer and author, and he wrote several books, including "Surely You're Joking, Mr. Feynman!" and "What Do You Care What Other People Think?".
-User:)";
+// User: Recommend a nice restaurant in the area.
+// Assistant: I recommend the restaurant "The Golden Duck". It is a 5 star restaurant with a great view of the city. The food is delicious and the service is excellent. The prices are reasonable and the portions are generous. The restaurant is located at 123 Main Street, New York, NY 10001. The phone number is (212) 555-1234. The hours are Monday through Friday from 11:00 am to 10:00 pm. The restaurant is closed on Saturdays and Sundays.
+// User: Who is Richard Feynman?
+// Assistant: Richard Feynman was an American physicist who is best known for his work in quantum mechanics and particle physics. He was awarded the Nobel Prize in Physics in 1965 for his contributions to the development of quantum electrodynamics. He was a popular lecturer and author, and he wrote several books, including "Surely You're Joking, Mr. Feynman!" and "What Do You Care What Other People Think?".
+// User:)";
+
+// static std::string k_system = 
+// R"(You are an assistant of a scientist. He has some problems and you should answer him.
+// )";
+
+static std::string k_system = 
+R"(Answer questions)";
 
 static std::vector<std::string> k_prompts = {
     "What is the meaning of life?",
@@ -46,6 +53,13 @@ static std::vector<std::string> k_prompts = {
     "How to get a job at Google?",
     "If you could have any superpower, what would it be?",
     "I want to learn how to play the piano.",
+    "Who's your favorite NBA player?",
+    "I want to learn more about Fermat Theory,please tell me how to prove it.",
+    "Explain future stock market predictions",
+    "Report recent breaking news and feature stories",
+    "Write cat in ascii code",
+    "Write a cover letter",
+    "Who are you?"
 };
 
 struct client {
@@ -149,7 +163,10 @@ int main(int argc, char ** argv) {
     fprintf(stderr, "\n\n");
     fflush(stderr);
 
-    const int n_ctx = llama_n_ctx(ctx);
+    //context size used during inference
+    // const int n_ctx = llama_n_ctx(ctx);
+    // printf("n_ctx为:%d",n_ctx);
+    const int n_ctx = 256;
 
     std::vector<client> clients(n_clients);
     for (size_t i = 0; i < clients.size(); ++i) {
@@ -184,6 +201,7 @@ int main(int argc, char ** argv) {
         for (int32_t i = 0; i < n_tokens_system; ++i) {
             llama_batch_add(batch, tokens_system[i], i, { 0 }, false);
         }
+        // printf("%d",batch.n_tokens);
 
         if (llama_decode(ctx, batch) != 0) {
             LOG_TEE("%s: llama_decode() failed\n", __func__);
@@ -198,6 +216,7 @@ int main(int argc, char ** argv) {
         LOG_TEE("\n");
     }
 
+    //从这里开始
     LOG_TEE("Processing requests ...\n\n");
 
     while (true) {
@@ -215,6 +234,7 @@ int main(int argc, char ** argv) {
 
             client.n_decoded += 1;
         }
+        // printf("本轮迭代的batch.n_tokens为:%d",batch.n_tokens);
 
         if (batch.n_tokens == 0) {
             // all sequences have ended - clear the entire KV cache
@@ -227,6 +247,7 @@ int main(int argc, char ** argv) {
 
         // insert new sequences for decoding
         if (cont_batching || batch.n_tokens == 0) {
+            // printf("来到了这里");
             for (auto & client : clients) {
                 if (client.seq_id == -1 && g_seq_id < n_seq) {
                     client.seq_id = g_seq_id;
@@ -261,10 +282,7 @@ int main(int argc, char ** argv) {
 
                     g_seq_id += 1;
 
-                    // insert new requests one-by-one
-                    //if (cont_batching) {
-                    //    break;
-                    //}
+
                 }
             }
         }
@@ -283,7 +301,7 @@ int main(int argc, char ** argv) {
             //    i -= n_batch;
             //    continue;
             //}
-
+            printf("batch.n_tokens:%d",batch.n_tokens);
             const int32_t n_tokens = std::min(n_batch, (int32_t) (batch.n_tokens - i));
 
             llama_batch batch_view = {
@@ -298,8 +316,9 @@ int main(int argc, char ** argv) {
             };
 
             const int ret = llama_decode(ctx, batch_view);
+
             if (ret != 0) {
-                if (n_batch == 1 || ret < 0) {
+                if (n_batch == 1 || ret < 0) {               //去修改context size
                     // if you get here, it means the KV cache is full - try increasing it via the context size
                     LOG_TEE("%s : failed to decode the batch, n_batch = %d, ret = %d\n", __func__, n_batch, ret);
                     return 1;

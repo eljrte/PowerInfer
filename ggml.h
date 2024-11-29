@@ -532,6 +532,8 @@ extern "C" {
         bool is_param;
 
         struct ggml_tensor * grad;
+
+        //这个是说依靠的来源 例如C=A*B 记录AB
         struct ggml_tensor * src[GGML_MAX_SRC];
 
         // performance
@@ -550,6 +552,10 @@ extern "C" {
         void * extra; // extra things e.g. for ggml-cuda.cu
 
         char padding[12];
+
+        //补充的 来细致到层数
+        int layers ;
+
     };
 
 

@@ -4692,6 +4692,7 @@ static __global__ void dequantize_mul_mat_vec_sparse(const void * __restrict__ v
     }
 
     int row = lst ? lst[gpu_row] : gpu_row;
+    // printf("%f",dev_sparse_threshold);
     if (idx[row] < dev_sparse_threshold) {
         return;
     }
@@ -8002,6 +8003,7 @@ inline void ggml_cuda_op_clamp(
     (void) src1_dd;
 }
 
+
 static void ggml_cuda_op_flatten(const ggml_tensor * src0, const ggml_tensor * src1, ggml_tensor * dst, const ggml_cuda_op_flatten_t op) {
     const int64_t nrows0 = ggml_nrows(src0);
 
@@ -8707,8 +8709,38 @@ static void ggml_cuda_mul_mat_mat_batched_cublas(const ggml_tensor * src0, const
     const to_fp32_cuda_t to_fp32_cuda = ggml_get_to_fp32_cuda(GGML_TYPE_F16);
     to_fp32_cuda(dst_f16, dst_ddf, ne, main_stream);
 
-    ggml_cuda_pool_free(src1_as_f16, src1_as);
-    ggml_cuda_pool_free(dst_f16, dst_as);
+
+    // if(dst->ne[0]==11008&&dst->src[2]==0&&dst->ne[1]==1&&src0->layers!=0){
+
+    // half *host_f16=(half*)malloc(11008*1*sizeof(half));
+    // if (!host_f16) {
+    //     fprintf(stderr, "Failed to allocate host memory\n");
+    //     return;
+    // }
+
+    // cudaMemcpy(host_f16, dst_f16, 11008  * sizeof(half), cudaMemcpyDeviceToHost);
+
+    // int sum=0;
+    // for (int i = 0; i < 11008; ++i) {
+    //     // 如果需要打印为浮点数，需要进行FP16到FP32的转换
+    //     float value_fp32_1 = __half2float(host_f16[i]);
+    //     // float value_fp32_2 = __half2float(host_f16[i+11008]);
+    //     // float value_fp32_3 = __half2float(host_f16[i+11008*2]);
+    //     // if(value_fp32_1<0.0f&&value_fp32_2<0.0f&&value_fp32_3<0.0f) sum++; 
+    //     //这里我们直接统计被激活的数量更直观一些
+    //     if(value_fp32_1>0) sum++; 
+    //     // printf("dst_f16[%d] = %f\n", i, value_fp32);
+    // }
+
+    // printf("第%d层被激活数为%d\n",src0->layers,sum);
+
+    // free(host_f16);
+    // // printf("%d\n",ne);
+    // }
+
+
+    // ggml_cuda_pool_free(src1_as_f16, src1_as);
+    // ggml_cuda_pool_free(dst_f16, dst_as);
 }
 
 static void ggml_cuda_mul_mat(const ggml_tensor * src0, const ggml_tensor * src1, ggml_tensor * dst) {
@@ -8785,6 +8817,16 @@ static void ggml_cuda_mul_mat(const ggml_tensor * src0, const ggml_tensor * src1
 }
 
 static void ggml_cuda_mul_mat_sparse(const ggml_tensor * src0, const ggml_tensor * src1, ggml_tensor * dst) {
+    cudaEvent_t start, stop;
+    float elapsedTime;
+
+    // 创建 CUDA 事件
+    cudaEventCreate(&start);
+    cudaEventCreate(&stop);
+
+    // 记录起始时间
+    cudaEventRecord(start, 0);
+
     GGML_ASSERT(dst->src[2] != NULL && "dst->src[2] must be present for sparse matrix multiplication");
     if (src1->ne[1] == 1 && src0->ne[0] % GGML_CUDA_DMMV_X == 0) {
         switch(src0->type) {
@@ -8800,9 +8842,31 @@ static void ggml_cuda_mul_mat_sparse(const ggml_tensor * src0, const ggml_tensor
     } else {
         ggml_cuda_op_mul_mat(src0, src1, dst, ggml_cuda_op_mul_mat_batch_sparse, false);
     }
+    cudaEventRecord(stop);
+    cudaEventSynchronize(stop);
+
+    float elapsedTimeMs; // 毫秒
+    cudaEventElapsedTime(&elapsedTimeMs, start, stop);
+
+    int64_t elapsedTimeUs = static_cast<int64_t>(elapsedTimeMs * 1000); // 转换为微秒
+
+    // printf("GPU:%lldus  ", elapsedTimeUs);
+
+    cudaEventDestroy(start);
+    cudaEventDestroy(stop);
 }
 
 void ggml_cuda_axpy(const ggml_tensor * src0, const ggml_tensor * src1, ggml_tensor * dst) {
+    cudaEvent_t start, stop;
+    float elapsedTime;
+
+    // 创建 CUDA 事件
+    cudaEventCreate(&start);
+    cudaEventCreate(&stop);
+
+    // 记录起始时间
+    cudaEventRecord(start, 0);
+
     GGML_ASSERT(dst->src[2] != NULL && "dst->src[2] must be present for axpy");
     bool all_on_device = (src0->backend == GGML_BACKEND_GPU || src0->backend == GGML_BACKEND_GPU_SPLIT) &&
         src1->backend == GGML_BACKEND_GPU && dst->backend == GGML_BACKEND_GPU;
@@ -8811,6 +8875,19 @@ void ggml_cuda_axpy(const ggml_tensor * src0, const ggml_tensor * src1, ggml_ten
     } else {
         ggml_cuda_op_mul_mat(src0, src1, dst, ggml_cuda_op_dequantize_axpy, false);
     }
+
+    cudaEventRecord(stop);
+    cudaEventSynchronize(stop);
+
+    float elapsedTimeMs; // 毫秒
+    cudaEventElapsedTime(&elapsedTimeMs, start, stop);
+
+    int64_t elapsedTimeUs = static_cast<int64_t>(elapsedTimeMs * 1000); // 转换为微秒
+
+    // printf("AXPY,GPU:%lldus  ", elapsedTimeUs);
+
+    cudaEventDestroy(start);
+    cudaEventDestroy(stop);
 }
 
 static void ggml_cuda_scale(const ggml_tensor * src0, const ggml_tensor * src1, ggml_tensor * dst) {
@@ -9224,6 +9301,7 @@ bool ggml_cuda_compute_forward(struct ggml_compute_params * params, struct ggml_
         || (tensor->src[1] != nullptr && tensor->src[1]->backend == GGML_BACKEND_GPU);
 
     // when src0 (weights) is not on device, we compute on CPU with sparsity
+    //这个好理解 weight不在gpu上，则在cpu上进行矩阵运算
     if (!src0_on_device && (tensor->op == GGML_OP_MUL_MAT_SPARSE || tensor->op == GGML_OP_AXPY)
         || !any_on_device && tensor->op != GGML_OP_MUL_MAT) {
         return false;
