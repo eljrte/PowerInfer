@@ -8160,7 +8160,7 @@ static void ggml_compute_forward_sum_f32(
         }
     }
     ((float *) dst->data)[0] = sum;
-    printf("%f ",sum);
+    // printf("%f ",sum);
 }
 
 static void ggml_compute_forward_sum_f16(
