@@ -4685,6 +4685,8 @@ template <int qk, int qr, dequantize_kernel_t dequantize_kernel>
 static __global__ void dequantize_mul_mat_vec_sparse(const void * __restrict__ vx, const dfloat * __restrict__ y, float * __restrict__ dst, const int ncols, const int nrows, int * lst, float * idx) {
     // qk = quantized weights per x block
     // qr = number of quantized weights per data value in x block
+    
+    //idx是sparse_idx  lst是gpu_bucket
     const int gpu_row = blockIdx.y*blockDim.y + threadIdx.y;
 
     if (gpu_row >= nrows) {

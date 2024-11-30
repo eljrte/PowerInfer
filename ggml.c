@@ -1159,7 +1159,7 @@ inline static void ggml_vec_add_f32 (const int n, float * z, const float * x, co
 inline static void ggml_vec_add1_f32(const int n, float * z, const float * x, const float   v) { for (int i = 0; i < n; ++i) z[i]  = x[i] + v;    }
 inline static void ggml_vec_acc_f32 (const int n, float * y, const float * x)                  { for (int i = 0; i < n; ++i) y[i] += x[i];        }
 inline static void ggml_vec_acc1_f32(const int n, float * y, const float   v)                  { for (int i = 0; i < n; ++i) y[i] += v;           }
-inline static void ggml_vec_sub_f32 (const int n, float * z, const float * x, const float * y) { for (int i = 0; i < n; ++i) z[i]  = x[i] - y[i]; }
+inline static void ggml_vec_sub_f32 (const int n, float * z, const float * x, const int * y) { for (int i = 0; i < n; ++i){z[i]  = x[i] - (float)y[i];} }
 inline static void ggml_vec_set_f32 (const int n, float * x, const float   v)                  { for (int i = 0; i < n; ++i) x[i]  = v;           }
 inline static void ggml_vec_cpy_f32 (const int n, float * y, const float * x)                  { for (int i = 0; i < n; ++i) y[i]  = x[i];        }
 inline static void ggml_vec_neg_f32 (const int n, float * y, const float * x)                  { for (int i = 0; i < n; ++i) y[i]  = -x[i];       }
@@ -3610,6 +3610,18 @@ struct ggml_tensor * ggml_log_inplace(
     return ggml_log_impl(ctx, a, true);
 }
 
+
+
+// struct ggml_tensor * ggml_compress(
+//         struct ggml_context * ctx,
+//         struct ggml_tensor * a){
+        
+//         struct ggml_tensor * result = ggml_new_tensor_1d(ctx, a->type, );
+
+
+// }
+
+
 // ggml_sum
 
 struct ggml_tensor * ggml_sum(
@@ -3872,6 +3884,7 @@ struct ggml_tensor * ggml_relu_inplace(
     return ggml_unary_inplace(ctx, a, GGML_UNARY_OP_RELU);
 }
 
+
 // ggml_leaky
 
 struct ggml_tensor * ggml_leaky(
@@ -3921,6 +3934,8 @@ struct ggml_tensor * ggml_silu_inplace(
         struct ggml_tensor  * a) {
     return ggml_unary_inplace(ctx, a, GGML_UNARY_OP_SILU);
 }
+
+
 
 // ggml_silu_back
 
@@ -7697,6 +7712,7 @@ static void ggml_compute_forward_sub_f32(
         const struct ggml_tensor * src0,
         const struct ggml_tensor * src1,
         struct ggml_tensor * dst) {
+    // printf("进行了减法");
     assert(params->ith == 0);
     assert(ggml_are_same_shape(src0, src1) && ggml_are_same_shape(src0, dst));
 
@@ -7712,6 +7728,7 @@ static void ggml_compute_forward_sub_f32(
     GGML_ASSERT(nb00 == sizeof(float));
 
     if (nb10 == sizeof(float)) {
+        // printf("src1的类型为%d ",src1->type);    int_32
         for (int ir = 0; ir < nr; ++ir) {
             // src0, src1 and dst are same shape => same indices
             const int i3 = ir/(ne2*ne1);
@@ -7725,10 +7742,11 @@ static void ggml_compute_forward_sub_f32(
                     (float *) ((char *) dst->data  + i3*nb3  + i2*nb2  + i1*nb1 ), 1,
                     ne0);
 #else
+
             ggml_vec_sub_f32(ne0,
                     (float *) ((char *) dst->data  + i3*nb3  + i2*nb2  + i1*nb1 ),
                     (float *) ((char *) src0->data + i3*nb03 + i2*nb02 + i1*nb01),
-                    (float *) ((char *) src1->data + i3*nb13 + i2*nb12 + i1*nb11));
+                    (int32_t *) ((char *) src1->data + i3*nb13 + i2*nb12 + i1*nb11));
 #endif
                 // }
             // }
@@ -7750,6 +7768,12 @@ static void ggml_compute_forward_sub_f32(
             }
         }
     }
+
+    // for(int i=0;i<100;i++)
+    // {
+    //     int64_t offset = i * dst->nb[0] / sizeof(int);
+    //     printf("E[%lld] = %f %f %f   ", i, ((float*)src0->data)[offset],((float*)src1->data)[offset],((float*)dst->data)[offset]);
+    // }
 }
 
 static void ggml_compute_forward_sub(
@@ -8077,12 +8101,38 @@ static void ggml_compute_forward_log(
     }
 }
 
+
+
+
+static void ggml_compute_forward_compress(
+        const struct ggml_compute_params * params,
+        const struct ggml_tensor * src0,
+        struct ggml_tensor * dst) {
+        
+    int out_idx = 0; 
+    const int n = src0->ne[0];
+    float * pp = (float*)src0->data;
+    for (int i = 0; i < n; ++i) {
+        if(pp[i] > 0)
+        {
+            ((float*)dst->data)[out_idx++] = i;
+        }
+    }
+}
+
+
+
+
+
+
+
 // ggml_compute_forward_sum
 
 static void ggml_compute_forward_sum_f32(
         const struct ggml_compute_params * params,
         const struct ggml_tensor * src0,
         struct ggml_tensor * dst) {
+    // printf("0");
     assert(params->ith == 0);
     assert(ggml_is_scalar(dst));
 
@@ -8110,12 +8160,14 @@ static void ggml_compute_forward_sum_f32(
         }
     }
     ((float *) dst->data)[0] = sum;
+    printf("%f ",sum);
 }
 
 static void ggml_compute_forward_sum_f16(
     const struct ggml_compute_params * params,
     const struct ggml_tensor * src0,
           struct ggml_tensor * dst) {
+    // printf("1");
     assert(params->ith == 0);
     assert(ggml_is_scalar(dst));
 
@@ -8148,6 +8200,7 @@ static void ggml_compute_forward_sum_i32(
     const struct ggml_compute_params * params,
     const struct ggml_tensor * src0,
           struct ggml_tensor * dst) {
+    // printf("2");
     assert(params->ith == 0);
     assert(ggml_is_scalar(dst));
 
@@ -8857,6 +8910,10 @@ static void ggml_compute_forward_elu(
             } break;
     }
 }
+
+
+
+
 
 // ggml_compute_forward_relu
 
@@ -14335,6 +14392,10 @@ static void ggml_compute_forward_mul_mat_sparse(
     //     if(flag) predictor++;
     //     if(flag&&gid[i]==0) predictor_cpu++;
     // }
+    // if(ith==0)
+    // {
+    //     printf("此时同时处理的token数目为:%d predictor %d predictor_cpu %d\n",dst->src[2]->ne[1],predictor, predictor_cpu);
+    // }
 
     // if (ith == 0)
     // {
@@ -15288,6 +15349,10 @@ static void ggml_compute_forward(struct ggml_compute_params * params, struct ggm
             {
                 GGML_ASSERT(false);
             } break;
+        case GGML_OP_COMPRESS:
+            {
+                ggml_compute_forward_compress(params,tensor->src[0],tensor);
+            }break;
     }
 }
 

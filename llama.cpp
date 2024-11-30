@@ -2744,6 +2744,24 @@ static int64_t sum_gpu_index(struct ggml_tensor * gpu_index) {
     return sum_val;
 }
 
+
+void print_tensor_data(const float *data, const int64_t *ne, const size_t *nb) {
+    int64_t total_elements = ne[0]; // 总元素数量（仅第0维非平凡）
+    int count = 0;                 // 已输出的元素计数
+
+    // 遍历最多前50个元素
+    for (int64_t i = 0; i < total_elements && count < 50; ++i) {
+        // 计算线性索引对应的偏移量
+        int64_t offset = i * nb[0] / sizeof(int);
+
+        // 输出当前元素
+        printf("E[%lld] = %f", i, data[offset]);
+        count++;
+    }
+}
+
+
+
 struct llama_gpu_split_loader {
     int n_tensors = 0;
     size_t n_bytes = 0; // tensor data bytes
@@ -2784,21 +2802,6 @@ struct llama_gpu_split_loader {
     }
     
 
-    void print_tensor_data(const int *data, const int64_t *ne, const size_t *nb) {
-    int64_t total_elements = ne[0]; // 总元素数量（仅第0维非平凡）
-    int count = 0;                 // 已输出的元素计数
-
-    // 遍历最多前50个元素
-    for (int64_t i = 0; i < total_elements && count < 200; ++i) {
-        // 计算线性索引对应的偏移量
-        int64_t offset = i * nb[0] / sizeof(int);
-
-        // 输出当前元素
-        printf("E[%lld] = %d", i, data[offset]);
-        count++;
-    }
-}
-
     //这个感觉挺重要的 split 看下gpu_bucket
     int load_gpu_idx_for_model(llama_model * model) {
         int n_layers = model->layers.size();
@@ -2818,6 +2821,7 @@ struct llama_gpu_split_loader {
                 LLAMA_LOG_ERROR("%s: error: failed to load gpu index or bucket\n", __func__);
                 return 1;
             }
+            //两个索引一开始都在CPU上
             model_layer.gpu_idx = idx_loader->create_tensor_for(ctx_meta, gpu_idx, GGML_BACKEND_CPU);
             model_layer.gpu_bucket = idx_loader->create_tensor_for(ctx_meta, gpu_bucket, GGML_BACKEND_CPU);
         }
@@ -2833,10 +2837,10 @@ struct llama_gpu_split_loader {
             int64_t gpu_neurons = sum_gpu_index(gpu_idx);
             model_layer.gpu_offload_ratio = (double)gpu_neurons / gpu_idx->ne[0];
 
-            fstream f;
-            f.open("Relullama13B_offload_information_vrambudget15G.txt",ios::out|ios::app);
-	        f<< "第" << il << "层的卸载率为:" << model_layer.gpu_offload_ratio<< "卸载数目为：" << gpu_neurons << endl;
-	        f.close(); 
+            // fstream f;
+            // f.open("Relullama13B_offload_information_vrambudget15G.txt",ios::out|ios::app);
+	        // f<< "第" << il << "层的卸载率为:" << model_layer.gpu_offload_ratio<< "卸载数目为：" << gpu_neurons << endl;
+	        // f.close(); 
             // printf("第%d层\n",il,model_layer.gpu_offload_ratio);
             // printf("第%d层,gpu_idx的维度大小为:%ld,%ld,%ld,%ld ",il,gpu_idx->ne[0],gpu_idx->ne[1],gpu_idx->ne[2],gpu_idx->ne[3]);
 
@@ -2848,6 +2852,8 @@ struct llama_gpu_split_loader {
 	        // f<< "第" << il << "层的卸载率为:" << model_layer.gpu_offload_ratio<< "卸载数目为：" << gpu_neurons << endl;
 	        // f.close(); 
             // // printf("第%d层\n",il,model_layer.gpu_offload_ratio);
+            
+            //bucket的维度大小是，卸载了多少个，ne[0]就有多大
             // printf("第%d层,gpu_bucket的维度大小为:%ld,%ld,%ld,%ld ",il,gpu_bucket->ne[0],gpu_bucket->ne[1],gpu_bucket->ne[2],gpu_bucket->ne[3]);
 
             // print_tensor_data((int*)gpu_bucket->data,gpu_bucket->ne,gpu_bucket->nb);
@@ -2909,8 +2915,8 @@ struct llama_augmentation_model_loader {
             return src;
         }
 
-        int64_t row_len = src->ne[0];
-        int64_t gpu_rows = gpu_bucket->ne[0];              //gpu_bucket->ne[0]是什么？
+        int64_t row_len = src->ne[0];                      //ffn_up的第一个维度 eg.4096
+        int64_t gpu_rows = gpu_bucket->ne[0];              //gpu_bucket->ne[0]  
         GGML_ASSERT(0 < gpu_rows && gpu_rows <= src->ne[1]);
 
         ggml_set_no_alloc(aux_ctx, true);
@@ -2938,6 +2944,7 @@ struct llama_augmentation_model_loader {
             ggml_cuda_cpy_1d(device_mat_row, host_mat_row);
             *gpu_data_pp = *gpu_data_pp + row_data_size;
         }
+        
         ggml_set_no_alloc(aux_ctx, false);
 
         return gpu_dst;
@@ -4450,7 +4457,8 @@ static struct ggml_tensor * llm_build_sparse_mul_mat(
          struct ggml_tensor * gpu_bucket,
    const llm_build_cb_short & cb,
                  const char * name,
-                         bool full_gpu) {
+                         bool full_gpu,
+                         int missing_num=0) {
     std::string full_name = "ffn_" + std::string(name) + "_sparse";
     ggml_tensor * out = nullptr;
 
@@ -4474,21 +4482,6 @@ static struct ggml_tensor * llm_build_sparse_mul_mat(
         return out;
     }
 #endif
-
-
-    // // Transfer missing weights to GPU
-    // if (gpu_index) {
-    //     // Identify indices not yet offloaded to GPU
-    //     ggml_tensor * missing_weights = ggml_idx_not_in_gpu(ctx, idx, gpu_index);
-
-    //     if (missing_weights) {
-    //         // Transfer the missing weights from `up` to `up_gpu`
-    //         ggml_copy_to_gpu(ctx, up, up_gpu, missing_weights);
-    //         ggml_update_gpu_index(ctx, gpu_index, idx);
-    //     }
-    // }
-
-
 
 
     out = ggml_mul_mat_idx(ctx, up, inp, idx, gpu_index);
@@ -4563,12 +4556,14 @@ static struct ggml_tensor * llm_build_sparse_axpy(
     return out;
 }
 
-
+//这个先按decoding进行处理
 static ggml_tensor * ggml_idx_not_in_gpu(struct ggml_context * ctx, struct ggml_tensor * idx, struct ggml_tensor * gpu_index) {
     // 获取 idx 中未加载到 GPU 的部分
     ggml_tensor * not_in_gpu = ggml_sub(ctx, idx, gpu_index); 
+
     return ggml_relu(ctx, not_in_gpu); // 保证返回布尔型张量
 }
+
 
 //ffn层中有两次用到了llm_build_sparse_mul_mat，所以输出文档中的行数会是理论上的两倍，没有问题。
 //在这个函数里尝试进行传输
@@ -4592,7 +4587,7 @@ static struct ggml_tensor * llm_build_ffn_sparse(
             llm_ffn_op_type   type_op,
           llm_ffn_gate_type   type_gate,
                      double   gpu_offload_ratio,
-   const llm_build_cb_short & cb_outer,int il) {
+   const llm_build_cb_short & cb_outer,int il,struct ggml_cgraph * gf) {
 
     bool full_gpu = gpu_offload_ratio >= 1.0;
     ggml_tensor * ffn_input = cur;
@@ -4613,28 +4608,51 @@ static struct ggml_tensor * llm_build_ffn_sparse(
     cb(idx, "mlp_pre_hidden");
     idx = ggml_relu(ctx, idx);
     cb(idx, "mlp_pre_relu");
-    //预测激活的idx
+    //预测激活的idx   一开始在CPU上
     idx = ggml_mul_mat(ctx, pre_w2, idx);
 
-    // //Transfer missing weights to GPU
-    // if (gpu_index) {
-    //     // Identify indices not yet offloaded to GPU
-    //     ggml_tensor * missing_weights = ggml_idx_not_in_gpu(ctx, idx, gpu_index);
-
-    //     if (missing_weights) {
-    //         // Transfer the missing weights from `up` to `up_gpu`
-    //         ggml_copy_to_gpu(ctx, up, up_gpu, missing_weights);
-    //         ggml_update_gpu_index(ctx, gpu_index, idx);
-    //     }
-
-    //     //这里我们先尝试把所有的都传过去
-    //     full_gpu=1;
-    // }
+    // printf("%d ",idx->backend);
+    // printf("gpu_index的维度:%d %d\n",idx->ne[0],idx->ne[1]);
 
 
     // If the FFN layer is not fully offloaded, we need to transfer the sparsity index
     // back to the CPU to avoid synchronization issues.
     (full_gpu ? cb : cb_outer)(idx, "mlp_pre_out");
+
+    // //Transfer missing weights to GPU
+    //这里我们先尝试把所有的都传过去 先尝试decoding阶段
+    ggml_tensor * num = nullptr;
+    if (idx->ne[1] == 1) {
+        ggml_tensor * idx_int = ggml_step(ctx,idx);
+        cb_outer(idx_int,"idx_int");
+        ggml_build_forward_expand(gf, idx_int); 
+
+        ggml_tensor * not_in_gpu = ggml_sub(ctx, idx_int, gpu_index);
+        cb(not_in_gpu, "not_in_gpu");
+        ggml_build_forward_expand(gf, not_in_gpu);  
+
+        ggml_tensor * tmp = ggml_step(ctx,not_in_gpu);
+        cb_outer(tmp,"tmp");
+        ggml_build_forward_expand(gf, tmp);
+
+        //这个num表示，激活了的，但是没在gpu上的weight的个数
+        num = ggml_sum(ctx, tmp);
+        cb(num, "num");
+        ggml_build_forward_expand(gf, num);  
+    }
+
+
+    // if(idx->ne[1]==1){
+    //     struct ggml_tensor * not_in_gpu = ggml_sub(ctx, idx, gpu_index);
+    //     cb_outer(not_in_gpu,"not_in_gpu");
+
+    //     struct ggml_tensor * missing_weights = ggml_relu(ctx, not_in_gpu);
+    //     cb_outer(missing_weights, "missing_weights");  
+
+    //     struct ggml_tensor * num = ggml_sum(ctx,missing_weights);
+    //     cb_outer(num,"missing_num");
+    // }
+
 
     auto act_fn = [&](ggml_tensor * tensor, const char * name) {
         switch (type_op) {
@@ -4648,9 +4666,11 @@ static struct ggml_tensor * llm_build_ffn_sparse(
         }
         return tensor;
     };
+    
 
     // FFN up
     struct ggml_tensor * up_out = llm_build_sparse_mul_mat(ctx, up, ffn_input, idx, up_gpu, gpu_index, gpu_bucket, cb_outer, "up", full_gpu);
+
     if (up_b) {
         up_out = ggml_add(ctx, up_out, up_b);
         cb(up_out, "ffn_up_b");
@@ -4979,16 +4999,19 @@ struct llm_build_context {
                 llm_ffn_gate_type gate_type = model.arch == LLM_ARCH_BAMBOO ? LLM_FFN_SYM : LLM_FFN_PAR;
 
                 if (llama_use_sparse_inference(&model)) {
+
                     llm_build_cb_short cbs = [&](ggml_tensor * cur, const char * name) {
                         std::string name_str = std::string(name) + "-" + std::to_string(il);
                         ggml_set_name(cur, name_str.c_str());
                     };
+
                     // We only offload the ffn input to GPU if all neurons are offloaded
                     if (model.layers[il].gpu_offload_ratio >= 1.) {
                         cb(cur, "ffn_norm", il);
                     } else {
                         cbs(cur, "ffn_norm");
                     }
+
                     model.layers[il].mlp_pre_w2->layers=il+1;
                     cur = llm_build_ffn_sparse(ctx0, cur,
                         model.layers[il].ffn_up,   NULL,
@@ -4999,7 +5022,7 @@ struct llm_build_context {
                         ffn_inp, // as for now, llama's pred use the same input as the ffn
                         model.layers[il].gpu_idx, 
                         model.layers[il].gpu_bucket, model.layers[il].ffn_gate_gpu, model.layers[il].ffn_down_gpu, model.layers[il].ffn_up_gpu,
-                        LLM_FFN_RELU, gate_type, model.layers[il].gpu_offload_ratio, cbs,il);
+                        LLM_FFN_RELU, gate_type, model.layers[il].gpu_offload_ratio, cbs,il,gf);
                 } else {
                     // fallback to dense
                     cb(cur, "ffn_norm", il);
@@ -5036,6 +5059,9 @@ struct llm_build_context {
         cb(cur, "result_output", -1);
 
         ggml_build_forward_expand(gf, cur);
+
+        //在这里可以打印计算图
+        // ggml_graph_print(gf);
 
         return gf;
     }
@@ -5266,7 +5292,7 @@ struct llm_build_context {
                     model.layers[il].gpu_idx, 
                     model.layers[il].gpu_bucket, 
                     model.layers[il].ffn_gate_gpu, model.layers[il].ffn_down_gpu, model.layers[il].ffn_up_gpu,
-                    LLM_FFN_RELU, LLM_FFN_SEQ, model.layers[il].gpu_offload_ratio, cbs,il);
+                    LLM_FFN_RELU, LLM_FFN_SEQ, model.layers[il].gpu_offload_ratio, cbs,il,gf);
             } else {
                 cb(attn_norm, "attn_norm", il);
                 cur = llm_build_ffn(ctx0, attn_norm, // !! use the attn norm, not the result
@@ -6277,6 +6303,7 @@ static struct ggml_cgraph * llama_build_graph(
     // For dense deriv, we offload layers from the end to the starting layer.
     bool offload_starting_layers = lctx.model.sparse_deriv;
 
+    //这个要重新看一下
     llm_build_cb cb = [&](struct ggml_tensor * cur, const char * name, int il) {
         if (il >= 0) {
             ggml_format_name(cur, "%s-%d", name, il);
